@@ -27,17 +27,28 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
     @Override
     public void save(T obj) {
         logger.info("Saving the object");
+        List<String> rowValues = getValues(obj);
+        List<Object> rawValues = getRawValues(obj);
+
+        StringBuilder preparedValues = new StringBuilder();
+        for (int i = 0; i < rowValues.size(); i++){
+            preparedValues.append("?").append(",");
+        }
+        preparedValues.deleteCharAt(preparedValues.length() - 1);
+
         String query = "INSERT INTO "
                 + getTableName()
                 + " ( "
                 + toLine(getFieldsNames(currentClass.getDeclaredFields()))
                 + " ) VALUES ( "
-                + toLine(getValues(obj, false))
+                + preparedValues
                 + ")";
+        logger.debug(query);
 
         try (Connection connection = PostgresConnector.getConnection();
-             Statement statement = connection.createStatement()) {
-            int update = statement.executeUpdate(query);
+             PreparedStatement statement = connection.prepareStatement(query))
+        {
+            int update = setPrepStatement(rawValues, rowValues, statement).executeUpdate();
             logger.info(String.format("%s row added!",  update));
         } catch (SQLException e) {
             logger.error("Error on saving the object", e);
@@ -53,19 +64,16 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
         return sb.toString();
     }
 
-    private List<String> getValues(T obj, boolean forUpdate) {
+
+
+    private List<String> getValues(T obj) {
         logger.debug("Getting list of values from user");
         Field[] fields = currentClass.getDeclaredFields();
         return Arrays.stream(fields)
                 .peek(f -> f.setAccessible(true))
                 .map(f -> {
                     try {
-                        if (forUpdate){
                             return f.get(obj).toString();
-                        } else {
-                            String value = f.get(obj).toString();
-                            return "'"+value+"'";
-                        }
                     } catch (IllegalAccessException e) {
                         logger.error("Error on getting values from user");
                     }
@@ -93,15 +101,17 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
     public T findById(long id) {
         logger.info("Looking for an object by ID");
         String query = "SELECT * FROM " + getTableName()
-                + " WHERE " + getIdName() + " = " + id;
+                + " WHERE " + getIdName() + " = ? ";
         try (Connection connection = PostgresConnector.getConnection();
-             Statement statement = connection.createStatement()) {
-            ResultSet resultSet = statement.executeQuery(query);
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, Math.toIntExact(id));
+            ResultSet resultSet = statement.executeQuery();
 
             if (resultSet.next()) {
                 logger.info("Parsing the object");
                 return parseResultSet(resultSet);
             }
+            logger.debug("Nothing found");
         } catch (SQLException | IllegalAccessException | InstantiationException | NoSuchMethodException | InvocationTargetException throwable) {
             logger.error("Error: object not found or something went wrong", throwable);
         }
@@ -155,7 +165,7 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
         logger.debug("Got table names and values");
         List<String> tablesNames = getFieldsNames(currentClass.getDeclaredFields());
         List<Object> rawValues = getRawValues(obj);
-        List<String> rowValues = getValues(obj, true);
+        List<String> rowValues = getValues(obj);
 
         logger.debug("Removing unnecessary Id field from all arrays");
         int idIndex = tablesNames.indexOf(getIdName());
@@ -215,11 +225,12 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
         logger.info("Deleting the object");
         logger.debug("Building 'DELETE' SQL query");
         String query = "DELETE FROM " + getTableName()
-                + " WHERE " + getIdName() + " = " + id;
+                + " WHERE " + getIdName() + " = ? ";
         try (Connection connection = PostgresConnector.getConnection();
-             Statement statement = connection.createStatement()) {
-
-            int deleted = statement.executeUpdate(query);
+             PreparedStatement statement = connection.prepareStatement(query))
+        {
+            statement.setInt(1, Math.toIntExact(id));
+            int deleted = statement.executeUpdate();
             logger.info(String.format("%s row deleted!",  deleted));
         } catch (SQLException e) {
             logger.error("Error while deleting the object", e);
