@@ -47,11 +47,110 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
 
         try (Connection connection = PostgresConnector.getConnection();
              PreparedStatement statement = connection.prepareStatement(query)) {
-            int update = setPrepStatement(rawValues, rowValues, statement).executeUpdate();
+            setPrepStatement(rawValues, rowValues, statement);
+            int update = statement.executeUpdate();
             logger.info(String.format("%s row added!", update));
         } catch (SQLException e) {
             logger.error("Error on saving the object", e);
         }
+    }
+
+    @Override
+    public T findById(long id) {
+        logger.info("Looking for an object by ID");
+        String query = "SELECT * FROM " + getTableName()
+                + " WHERE " + getIdName() + " = ? ";
+        try (Connection connection = PostgresConnector.getConnection();
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, Math.toIntExact(id));
+            ResultSet resultSet = statement.executeQuery();
+
+            if (resultSet.next()) {
+                logger.info("Parsing the object");
+                return parseResultSet(resultSet);
+            }
+            logger.debug("Nothing found");
+        } catch (SQLException | IllegalAccessException | InstantiationException | NoSuchMethodException | InvocationTargetException throwable) {
+            logger.error("Error: object not found or something went wrong", throwable);
+        }
+        return null;
+    }
+
+    @Override
+    public void update(T obj) {
+        logger.info(String.format("Updating the object: %s", obj.toString()));
+
+        logger.debug("Got table names and values");
+        List<String> tablesNames = getFieldsNames(currentClass.getDeclaredFields());
+        List<Object> rawValues = getRawValues(obj);
+        List<String> rowValues = getValues(obj);
+
+        logger.debug("Removing unnecessary Id field from all arrays");
+        int idIndex = tablesNames.indexOf(getIdName());
+        String id = rowValues.get(idIndex);
+        tablesNames.remove(getIdName());
+        rowValues.remove(idIndex);
+        rawValues.remove(idIndex);
+
+        logger.debug("Building SQL query");
+        String query = "UPDATE " + getTableName()
+                + setBuilder(tablesNames)
+                + " WHERE " + getIdName() + " = " + id;
+        logger.debug(String.format("Got it: %s", query));
+
+        try (Connection connection = PostgresConnector.getConnection();
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            setPrepStatement(rawValues, rowValues, statement);
+            int update = statement.executeUpdate();
+            logger.info(String.format("%s row updated!", update));
+        } catch (SQLException e) {
+            logger.error("Error while updating the object", e);
+        }
+    }
+
+    @Override
+    public void delete(long id) {
+        logger.info("Deleting the object");
+        logger.debug("Building 'DELETE' SQL query");
+        String query = "DELETE FROM " + getTableName()
+                + " WHERE " + getIdName() + " = ? ";
+        try (Connection connection = PostgresConnector.getConnection();
+             PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, Math.toIntExact(id));
+            int deleted = statement.executeUpdate();
+            logger.info(String.format("%s row deleted!", deleted));
+        } catch (SQLException e) {
+            logger.error("Error while deleting the object", e);
+        }
+    }
+
+    private void setPrepStatement(List<Object> rawValues, List<String> rowValues, PreparedStatement statement) throws SQLException {
+        logger.debug("Checking value.class to choose right 'set' method for prepared statement");
+        for (int i = 0; i < rowValues.size(); i++) {
+            int columnNumber = rawValues.indexOf(rawValues.get(i)) + 1;
+            String val = rowValues.get(i);
+
+            switch (rawValues.get(i).getClass().getSimpleName()) {
+                case "Integer" -> statement.setInt(columnNumber, Integer.parseInt(val));
+                case "Double" -> statement.setDouble(columnNumber, Double.parseDouble(val));
+                case "Date" -> statement.setDate(columnNumber, Date.valueOf(val));
+                case "String" -> statement.setString(columnNumber, val);
+            }
+        }
+    }
+
+    private String setBuilder(List<String> tablesNames) {
+        logger.debug("Building 'SET' query for update() method");
+        StringBuilder sb = new StringBuilder();
+        sb.append(" SET ");
+        for (String tablesName : tablesNames) {
+            sb.append(tablesName)
+                    .append(" = ")
+                    .append(" ? ")
+                    .append(",");
+        }
+        sb.deleteCharAt(sb.length() - 1);
+        return sb.toString();
     }
 
     private String toLine(List<String> list) {
@@ -78,7 +177,7 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
                 }).collect(Collectors.toList());
     }
 
-    public List<Object> getRawValues(T obj) {
+    private List<Object> getRawValues(T obj) {
         logger.debug("Getting class objects from user input");
         Field[] fields = currentClass.getDeclaredFields();
         return Arrays.stream(fields)
@@ -91,27 +190,6 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
                     }
                     return null;
                 }).collect(Collectors.toList());
-    }
-
-    @Override
-    public T findById(long id) {
-        logger.info("Looking for an object by ID");
-        String query = "SELECT * FROM " + getTableName()
-                + " WHERE " + getIdName() + " = ? ";
-        try (Connection connection = PostgresConnector.getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, Math.toIntExact(id));
-            ResultSet resultSet = statement.executeQuery();
-
-            if (resultSet.next()) {
-                logger.info("Parsing the object");
-                return parseResultSet(resultSet);
-            }
-            logger.debug("Nothing found");
-        } catch (SQLException | IllegalAccessException | InstantiationException | NoSuchMethodException | InvocationTargetException throwable) {
-            logger.error("Error: object not found or something went wrong", throwable);
-        }
-        return null;
     }
 
     private String getTableName() {
@@ -152,82 +230,5 @@ public abstract class AbstractDaoImpl<T> implements AbstractDao<T> {
             fieldNames.add(name);
         }
         return fieldNames;
-    }
-
-    @Override
-    public void update(T obj) {
-        logger.info(String.format("Updating the object: %s", obj.toString()));
-
-        logger.debug("Got table names and values");
-        List<String> tablesNames = getFieldsNames(currentClass.getDeclaredFields());
-        List<Object> rawValues = getRawValues(obj);
-        List<String> rowValues = getValues(obj);
-
-        logger.debug("Removing unnecessary Id field from all arrays");
-        int idIndex = tablesNames.indexOf(getIdName());
-        String id = rowValues.get(idIndex);
-        tablesNames.remove(getIdName());
-        rowValues.remove(idIndex);
-        rawValues.remove(idIndex);
-
-        logger.debug("Building SQL query");
-        String query = "UPDATE " + getTableName()
-                + setBuilder(tablesNames)
-                + " WHERE " + getIdName() + " = " + id;
-        logger.debug(String.format("Got it: %s", query));
-
-        try (Connection connection = PostgresConnector.getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-            int update = setPrepStatement(rawValues, rowValues, statement).executeUpdate();
-            logger.info(String.format("%s row updated!", update));
-        } catch (SQLException e) {
-            logger.error("Error while updating the object", e);
-        }
-    }
-
-    private PreparedStatement setPrepStatement(List<Object> rawValues, List<String> rowValues, PreparedStatement statement) throws SQLException {
-        logger.debug("Checking value.class to choose right 'set' method for prepared statement");
-        for (int i = 0; i < rowValues.size(); i++) {
-            int columnNumber = rawValues.indexOf(rawValues.get(i)) + 1;
-            String val = rowValues.get(i);
-
-            switch (rawValues.get(i).getClass().getSimpleName()) {
-                case "Integer" -> statement.setInt(columnNumber, Integer.parseInt(val));
-                case "Double" -> statement.setDouble(columnNumber, Double.parseDouble(val));
-                case "Date" -> statement.setDate(columnNumber, Date.valueOf(val));
-                case "String" -> statement.setString(columnNumber, val);
-            }
-        }
-        return statement;
-    }
-
-    private String setBuilder(List<String> tablesNames) {
-        logger.debug("Building 'SET' query for update() method");
-        StringBuilder sb = new StringBuilder();
-        sb.append(" SET ");
-        for (String tablesName : tablesNames) {
-            sb.append(tablesName)
-                    .append(" = ")
-                    .append(" ? ")
-                    .append(",");
-        }
-        sb.deleteCharAt(sb.length() - 1);
-        return sb.toString();
-    }
-
-    @Override
-    public void delete(long id) {
-        logger.info("Deleting the object");
-        logger.debug("Building 'DELETE' SQL query");
-        String query = "DELETE FROM " + getTableName()
-                + " WHERE " + getIdName() + " = ? ";
-        try (Connection connection = PostgresConnector.getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-            statement.setInt(1, Math.toIntExact(id));
-            int deleted = statement.executeUpdate();
-            logger.info(String.format("%s row deleted!", deleted));
-        } catch (SQLException e) {
-            logger.error("Error while deleting the object", e);
-        }
     }
 }
